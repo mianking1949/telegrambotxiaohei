@@ -1,346 +1,318 @@
-import time  
-import datetime  
-import requests  
-  
-TOKEN = "8771074603:AAFmIZXie0_kGrcBevMjC88mGvNyLMkMcSQ"  
-URL = f"https://api.telegram.org/bot{TOKEN}/"  
-  
-chat_data = {}  
-  
-def clear_webhook():  
-    try:  
-        requests.get(URL + "deleteWebhook", timeout=10)  
-    except Exception:  
-        pass  
-  
-def send_message(chat_id, text, reply_markup=None):  
-    try:  
-        payload = {"chat_id": chat_id, "text": text}  
-        if reply_markup:  
-            payload["reply_markup"] = reply_markup  
-        requests.post(URL + "sendMessage", json=payload, timeout=10)  
-    except Exception as e:  
-        print("កំហុសក្នុងការផ្ញើសារ:", e)  
-  
-def edit_message_text(chat_id, message_id, text, reply_markup=None):  
-    try:  
-        payload = {"chat_id": chat_id, "message_id": message_id, "text": text}  
-        if reply_markup:  
-            payload["reply_markup"] = reply_markup  
-        requests.post(URL + "editMessageText", json=payload, timeout=10)  
-    except Exception as e:  
-        print("កំហុសក្នុងការកែប្រែសារ:", e)  
-  
-def send_document(chat_id, file_bytes, filename):  
-    try:  
-        files = {'document': (filename, file_bytes, 'text/csv')}  
-        data = {'chat_id': chat_id}  
-        requests.post(URL + "sendDocument", data=data, files=files, timeout=15)  
-    except Exception as e:  
-        print("កំហុសក្នុងការផ្ញើ Document:", e)  
-  
-def get_okx_p2p_rates():  
-    headers = {  
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'  
-    }  
-    url = "https://www.okx.com/v3/c2c/tradingOrders/books?quoteCurrency=cny&baseCurrency=usdt&side=sell&paymentMethod=all&userType=all"  
-      
-    try:  
-        res = requests.get(url, headers=headers, timeout=5).json()  
-        if res.get("code") == 0 and "data" in res and "sell" in res["data"]:  
-            sellers = res["data"]["sell"][:10]  
-            rates_list = []  
-            for idx, s in enumerate(sellers, 1):  
-                price = s.get("price", "6.67")  
-                nick = s.get("nickName", "商家")  
-                rates_list.append(f"{idx}) {price}   {nick}")  
-              
-            top_rate = float(sellers[0]["price"]) if sellers else 6.67  
-            return "\n".join(rates_list), top_rate  
-    except Exception:  
-        pass  
-      
-    default_list = (  
-        "1) 6.67   小鱼儿诚信商行\n"  
-        "2) 6.68   湘益U商\n"  
-        "3) 6.68   三友币行\n"  
-        "4) 6.68   六福商贸\n"  
-        "5) 6.68   旺集商行\n"  
-        "6) 6.68   小川国际\n"  
-        "7) 6.68   来洋合众国\n"  
-        "8) 6.68   鑫系华夏\n"  
-        "9) 6.68   螃蟹横着走\n"  
-        "10) 6.68   喜临门商行"  
-    )  
-    return default_list, 6.67  
-  
-def get_report_keyboard():  
-    return {  
-        "inline_keyboard": [  
-            [  
-                {"text": "📊 刷新账单", "callback_data": "btn_report"},  
-                {"text": "📥 导出Excel", "callback_data": "btn_excel"}  
-            ],  
-            [  
-                {"text": "↩️ 撤销上一笔", "callback_data": "btn_undo"},  
-                {"text": "🔄 重置账单", "callback_data": "btn_reset"}  
-            ]  
-        ]  
-    }  
-  
-def build_report(chat_id):  
-    data = chat_data[chat_id]  
-    count_in = len(data["in_records"])  
-    count_out = len(data["out_records"])  
-  
-    in_list_str = "\n".join([r["str"] for r in data["in_records"]]) if data["in_records"] else "无"  
-    out_list_str = "\n".join([r["str"] for r in data["out_records"]]) if data["out_records"] else "无"  
-  
-    tot_amt_val = data["total_amount"]  
-    tot_amt = int(tot_amt_val) if tot_amt_val.is_integer() else f"{tot_amt_val:.2f}"  
-      
-    tot_in_usdt = data["total_in_usdt"]  
-    fee_rate = data["fee_rate"]  
-      
-    fee_usdt = tot_in_usdt * (fee_rate / 100.0)  
-    should_pay_usdt = tot_in_usdt - fee_usdt  
-      
-    tot_out_usdt = data["total_out_usdt"]  
-    remaining_usdt = should_pay_usdt - tot_out_usdt  
-  
-    limit_msg = ""  
-    if data["usdt_limit"] is not None:  
-        max_limit = data["usdt_limit"]  
-        if tot_in_usdt >= max_limit:  
-            limit_msg = f"\n\n⚠️ 已超额! ({tot_in_usdt:.2f} / {max_limit:.2f} U)"  
-        else:  
-            limit_msg = f"\n\n📊 限额: {tot_in_usdt:.2f} / {max_limit:.2f} U"  
-  
-    fee_info = f" ({fee_rate}% 手续费: {fee_usdt:.2f} U)" if fee_rate > 0 else ""  
-  
-    text = (  
-        f"众合管家\n\n"  
-        f"入账({count_in}笔)：\n"  
-        f"{in_list_str}\n\n"  
-        f"下发({count_out}笔)：\n"  
-        f"{out_list_str}\n\n"  
-        f"总入款：{tot_amt}\n"  
-        f"USDT汇率：{data['rate']}\n\n"  
-        f"应下发：{tot_amt} | {should_pay_usdt:.2f} U{fee_info}\n"  
-        f"总下发：{tot_out_usdt:.2f} U\n"  
-        f"未下发：{tot_amt} | {remaining_usdt:.2f} U"  
-        f"{limit_msg}"  
-    )  
-    return text  
-  
-def check_and_auto_reset(chat_id):  
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")  
-    data = chat_data[chat_id]  
-      
-    if data["last_date"] != today_str:  
-        if data["in_records"] or data["out_records"]:  
-            data["history"].append({  
-                "date": data["last_date"],  
-                "report": build_report(chat_id)  
-            })  
-            send_message(chat_id, f"🔄 跨天自动重置：已保存 {data['last_date']} 的账单至历史账单！")  
-  
-        data["in_records"] = []  
-        data["out_records"] = []  
-        data["total_amount"] = 0.0  
-        data["total_in_usdt"] = 0.0  
-        data["total_out_usdt"] = 0.0  
-        data["last_date"] = today_str  
-  
-def main():  
-    clear_webhook()  
-    last_update_id = None  
-    print("Bot កំពុងដំណើរការ...")  
-  
-    while True:  
-        try:  
-            for c_id in list(chat_data.keys()):  
-                check_and_auto_reset(c_id)  
-  
-            url = URL + "getUpdates?timeout=10"  
-            if last_update_id:  
-                url += f"&offset={last_update_id}"  
-  
-            res = requests.get(url, timeout=15).json()  
-  
-            if "result" in res:  
-                for update in res["result"]:  
-                    last_update_id = update["update_id"] + 1  
-  
-                    if "callback_query" in update:  
-                        cq = update["callback_query"]  
-                        cq_id = cq["id"]  
-                        chat_id = cq["message"]["chat"]["id"]  
-                        message_id = cq["message"]["message_id"]  
-                        data_action = cq["data"]  
-  
-                        if chat_id not in chat_data:  
-                            chat_data[chat_id] = {  
-                                "in_records": [], "out_records": [], "history": [],  
-                                "total_amount": 0.0, "total_in_usdt": 0.0, "total_out_usdt": 0.0,  
-                                "rate": 0.0, "fee_rate": 0.0, "usdt_limit": None,  
-                                "last_date": datetime.datetime.now().strftime("%Y-%m-%d")  
-                            }  
-  
-                        if data_action == "btn_report":  
-                            edit_message_text(chat_id, message_id, build_report(chat_id), reply_markup=get_report_keyboard())  
-                        elif data_action == "btn_excel":  
-                            today_str = datetime.datetime.now().strftime("%Y-%m-%d")  
-                            filename = f"账单_{today_str}.csv"  
-                            csv_content = "\ufeff类型,时间,金额,汇率,USDT\n"  
-                            for r in chat_data[chat_id]["in_records"]:  
-                                csv_content += f"入账,{r['time']},{r['amount']},{r['rate']},{r['usdt']:.2f}\n"  
-                            for r in chat_data[chat_id]["out_records"]:  
-                                csv_content += f"下发,{r['time']},-,-,{r['usdt']:.2f}\n"  
-                            send_document(chat_id, csv_content.encode('utf-8-sig'), filename)  
-                        elif data_action == "btn_undo":  
-                            if chat_data[chat_id]["in_records"]:  
-                                last_rec = chat_data[chat_id]["in_records"].pop()  
-                                chat_data[chat_id]["total_amount"] -= last_rec["amount"]  
-                                chat_data[chat_id]["total_in_usdt"] -= last_rec["usdt"]  
-                                edit_message_text(chat_id, message_id, build_report(chat_id), reply_markup=get_report_keyboard())  
-                            else:  
-                                requests.post(URL + "answerCallbackQuery", json={"callback_query_id": cq_id, "text": "⚠️ 当前没有可撤销的入账记录。"})  
-                        elif data_action == "btn_reset":  
-                            r_temp = chat_data[chat_id]["rate"]  
-                            l_temp = chat_data[chat_id]["usdt_limit"]  
-                            f_temp = chat_data[chat_id]["fee_rate"]  
-                            chat_data[chat_id]["in_records"] = []  
-                            chat_data[chat_id]["out_records"] = []  
-                            chat_data[chat_id]["total_amount"] = 0.0  
-                            chat_data[chat_id]["total_in_usdt"] = 0.0  
-                            chat_data[chat_id]["total_out_usdt"] = 0.0  
-                            edit_message_text(chat_id, message_id, build_report(chat_id), reply_markup=get_report_keyboard())  
-  
-                        requests.post(URL + "answerCallbackQuery", json={"callback_query_id": cq_id})  
-                        continue  
-  
-                    if "message" in update and "text" in update["message"]:  
-                        chat_id = update["message"]["chat"]["id"]  
-                        text = update["message"]["text"].strip()  
-                          
-                        if "@" in text:  
-                            text = text.split("@")[0]  
-  
-                        today_str = datetime.datetime.now().strftime("%Y-%m-%d")  
-  
-                        if chat_id not in chat_data:  
-                            chat_data[chat_id] = {  
-                                "in_records": [], "out_records": [], "history": [],  
-                                "total_amount": 0.0, "total_in_usdt": 0.0, "total_out_usdt": 0.0,  
-                                "rate": 0.0, "fee_rate": 0.0, "usdt_limit": None,  
-                                "last_date": today_str  
-                            }  
-  
-                        check_and_auto_reset(chat_id)  
-  
-                        if text.upper() == "Z0":  
-                            top10_str, top1_rate = get_okx_p2p_rates()  
-                            if chat_data[chat_id]["rate"] == 0:  
-                                chat_data[chat_id]["rate"] = top1_rate  
-                                  
-                            curr_rate = chat_data[chat_id]["rate"]  
-                            curr_fee = chat_data[chat_id]["fee_rate"]  
-                            tot_amt_val = chat_data[chat_id]["total_amount"]  
-                            tot_amt = int(tot_amt_val) if tot_amt_val.is_integer() else f"{tot_amt_val:.2f}"  
-                            tot_in_usdt = chat_data[chat_id]["total_in_usdt"]  
-                            calc_usdt_str = "0" if tot_in_usdt == 0 else f"{tot_in_usdt:.2f}"  
-                              
-                            z0_response = (  
-                                f"欧易所有商家实时交易汇率top10\n\n{top10_str}\n\n"  
-                                f"本群汇率：实时汇率 {curr_rate}\n本群费率：{int(curr_fee) if curr_fee.is_integer() else curr_fee}\n\n"  
-                                f"💰 {tot_amt} / {curr_rate} = {calc_usdt_str}"  
-                            )  
-                            send_message(chat_id, z0_response)  
-                            continue  
-  
-                        if text.startswith("设置汇率") or text.startswith("汇率") or text.lower().startswith("rate"):  
-                            parts = text.split()  
-                            if len(parts) > 1:  
-                                try:  
-                                    new_rate = float(parts[1])  
-                                    chat_data[chat_id]["rate"] = new_rate  
-                                    send_message(chat_id, f"✅ 已设置汇率：{new_rate}\n\n" + build_report(chat_id), reply_markup=get_report_keyboard())  
-                                except ValueError:  
-                                    pass  
-                            continue  
-  
-                        if text.startswith("设置手续费") or text.startswith("手续费") or text.startswith("费率"):  
-                            parts = text.split()  
-                            if len(parts) > 1:  
-                                try:  
-                                    new_fee = float(parts[1])  
-                                    chat_data[chat_id]["fee_rate"] = new_fee  
-                                    send_message(chat_id, f"✅ 已设置手续费：{new_fee}%\n\n" + build_report(chat_id), reply_markup=get_report_keyboard())  
-                                except ValueError:  
-                                    pass  
-                            continue  
-  
-                        if text in ["开始", "/start", "重置", "reset"]:  
-                            chat_data[chat_id]["in_records"] = []  
-                            chat_data[chat_id]["out_records"] = []  
-                            chat_data[chat_id]["total_amount"] = 0.0  
-                            chat_data[chat_id]["total_in_usdt"] = 0.0  
-                            chat_data[chat_id]["total_out_usdt"] = 0.0  
-                            send_message(chat_id, "✅ 已本群开始作业，祝各位业绩千万！", reply_markup=get_report_keyboard())  
-                            continue  
-  
-                        if text in ["+0", "账单", "របាយការណ៍"]:  
-                            send_message(chat_id, build_report(chat_id), reply_markup=get_report_keyboard())  
-                            continue  
-  
-                        if text.lower() in ["导出", "excel", "导出excel"]:  
-                            filename = f"账单_{today_str}.csv"  
-                            csv_content = "\ufeff类型,时间,金额,汇率,USDT\n"  
-                            for r in chat_data[chat_id]["in_records"]:  
-                                csv_content += f"入账,{r['time']},{r['amount']},{r['rate']},{r['usdt']:.2f}\n"  
-                            for r in chat_data[chat_id]["out_records"]:  
-                                csv_content += f"下发,{r['time']},-,-,{r['usdt']:.2f}\n"  
-                            send_document(chat_id, csv_content.encode('utf-8-sig'), filename)  
-                            continue  
-  
-                        if text.startswith("+") and text != "+0":  
-                            try:  
-                                expr = text[1:].strip()  
-                                if "/" in expr:  
-                                    parts = expr.split('/')  
-                                    amount_part = parts[0].strip()  
-                                    rate_part = parts[1].strip()  
-                                    rate = float(rate_part)  
-                                else:  
-                                    amount_part = expr  
-                                    if chat_data[chat_id]["rate"] > 0:  
-                                        rate = chat_data[chat_id]["rate"]  
-                                    else:  
-                                        _, top1_r = get_okx_p2p_rates()  
-                                        rate = top1_r  
-                                        chat_data[chat_id]["rate"] = top1_r  
-                                    rate_part = str(rate)  
-  
-                                amount = float(amount_part)  
-                                usdt = amount / rate  
-                                current_time = datetime.datetime.now().strftime("%H:%M:%S")  
-  
-                                record_str = f"{current_time} {amount_part}/{rate_part}={usdt:.2f}"  
-                                chat_data[chat_id]["in_records"].append({  
-                                    "time": current_time, "amount": amount, "rate": rate, "usdt": usdt, "str": record_str  
-                                })  
-                                chat_data[chat_id]["total_amount"] += amount  
-                                chat_data[chat_id]["total_in_usdt"] += usdt  
-  
-                                send_message(chat_id, build_report(chat_id), reply_markup=get_report_keyboard())  
-                            except Exception:  
-                                pass  
-  
-        except Exception as e:  
-            print("កំហុសប្រព័ន្ធ:", e)  
-  
-        time.sleep(1)  
-  
-if __name__ == '__main__':  
-    main()  
+import io
+import re
+import sqlite3
+import pandas as pd
+import requests
+from datetime import datetime, date
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+)
+
+# ==================== 配置项 ====================
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # 替换为你的 Telegram Bot Token (从 @BotFather 获取)
+ADMIN_IDS = [587654321]  # 替换为你的纯数字 Telegram User ID (使用 @userinfobot 获取)
+
+# TronGrid API Key (建议配置，避免免费接口请求频率受限)
+TRONGRID_API_KEY = "YOUR_TRONGRID_API_KEY"
+
+# TRC-20 USDT 合约地址
+USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+# 正则表达式匹配 TRX 地址 (T开头，base58字符，长度34)
+PATTERN_TRX = r"^T[a-km-zA-HJ-NP-Z1-9]{33}$"
+
+
+# ==================== 1. 数据库与权限系统 (SQLite) ====================
+
+def init_db():
+    conn = sqlite3.connect("bot_user_data.db")
+    cursor = conn.cursor()
+    # 用户表：记录 ID、权限等级 (user/vip/admin)、每日查询统计
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        role TEXT DEFAULT 'user',
+        daily_count INTEGER DEFAULT 0,
+        last_query_date TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def check_and_update_perm(user_id: int) -> tuple[bool, str]:
+    """检查用户权限与每日额度"""
+    if user_id in ADMIN_IDS:
+        return True, "admin"
+
+    conn = sqlite3.connect("bot_user_data.db")
+    cursor = conn.cursor()
+    
+    today_str = str(date.today())
+    cursor.execute("SELECT role, daily_count, last_query_date FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.execute("INSERT INTO users (user_id, role, daily_count, last_query_date) VALUES (?, 'user', 1, ?)", (user_id, today_str))
+        conn.commit()
+        conn.close()
+        return True, "user"
+
+    role, count, last_date = row
+    
+    if role == "banned":
+        conn.close()
+        return False, "❌ 您的账号已被系统封禁，无法使用此功能。"
+
+    # 重置新一天的计数
+    if last_date != today_str:
+        count = 0
+
+    limit = 100 if role == "vip" else 5  # 普通用户每天 5 次，VIP 100 次
+
+    if count >= limit:
+        conn.close()
+        return False, f"⚠️ 您今天的查询额度已用完 ({count}/{limit} 次)。如需提升额度请联系管理员开通 VIP。"
+
+    # 更新计数
+    cursor.execute("UPDATE users SET daily_count = ?, last_query_date = ? WHERE user_id = ?", (count + 1, today_str, user_id))
+    conn.commit()
+    conn.close()
+    return True, role
+
+
+# ==================== 2. 实时汇率系统 (CoinGecko API) ====================
+
+def get_trx_usdt_prices():
+    """获取 TRX 和 USDT 的最新价格 (USD / CNY)"""
+    url = "https://api.coingecko.com/api/v3/simple/price?ids=tron,tether&vs_currencies=usd,cny"
+    try:
+        res = requests.get(url, timeout=5).json()
+        return {
+            "TRX": res.get("tron", {"usd": 0.12, "cny": 0.86}),
+            "USDT": res.get("tether", {"usd": 1.0, "cny": 7.2}),
+        }
+    except Exception:
+        # 异常时的备用保底汇率
+        return {
+            "TRX": {"usd": 0.12, "cny": 0.86},
+            "USDT": {"usd": 1.0, "cny": 7.2},
+        }
+
+
+# ==================== 3. TRX 数据查询 + CSV 报告准备 ====================
+
+def format_time(ms_timestamp):
+    if not ms_timestamp: 
+        return "未知"
+    if ms_timestamp > 1e11: 
+        ms_timestamp /= 1000
+    return datetime.fromtimestamp(ms_timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+def query_tron(address: str):
+    headers = {"Accept": "application/json"}
+    if TRONGRID_API_KEY and TRONGRID_API_KEY != "YOUR_TRONGRID_API_KEY":
+        headers["TRON-PRO-API-KEY"] = TRONGRID_API_KEY
+
+    payload = {"address": address, "visible": True}
+    
+    # 1. 账户基本信息
+    res = requests.post("https://api.trongrid.io/wallet/getaccount", json=payload, headers=headers).json()
+    trx_bal = res.get("balance", 0) / 1_000_000
+    create_time = format_time(res.get("create_time"))
+    
+    # 质押 TRX
+    frozen_v2 = res.get("frozenV2", [])
+    staked_trx = sum(item.get("amount", 0) for item in frozen_v2) / 1_000_000
+
+    # USDT 余额
+    usdt_bal = 0.0
+    for item in res.get("trc20", []):
+        if USDT_TRC20_CONTRACT in item:
+            usdt_bal = float(item[USDT_TRC20_CONTRACT]) / 1_000_000
+            break
+
+    # 2. 能量和带宽
+    res_data = requests.post("https://api.trongrid.io/wallet/getaccountresource", json=payload, headers=headers).json()
+    free_bw = max(0, res_data.get("freeNetLimit", 600) - res_data.get("freeNetUsed", 0))
+    staked_bw = max(0, res_data.get("NetLimit", 0) - res_data.get("NetUsed", 0))
+    available_energy = max(0, res_data.get("EnergyLimit", 0) - res_data.get("EnergyUsed", 0))
+
+    # 3. 汇率与资产折算
+    prices = get_trx_usdt_prices()
+    total_usd = ((trx_bal + staked_trx) * prices["TRX"]["usd"]) + (usdt_bal * prices["USDT"]["usd"])
+    total_cny = ((trx_bal + staked_trx) * prices["TRX"]["cny"]) + (usdt_bal * prices["USDT"]["cny"])
+
+    # 4. 获取 USDT 交易明细并准备 CSV 数据
+    tx_url = f"https://api.trongrid.io/v1/accounts/{address}/transactions/trc20?limit=50&contract_address={USDT_TRC20_CONTRACT}"
+    tx_data = requests.get(tx_url, headers=headers).json().get("data", [])
+    
+    usdt_in_count = 0
+    usdt_out_count = 0
+    recent_tx_lines = []
+    export_list = []
+    last_active = format_time(tx_data[0].get("block_timestamp")) if tx_data else "无近期交易"
+
+    for tx in tx_data:
+        val = float(tx.get("value", 0)) / 1_000_000
+        t_str = format_time(tx.get("block_timestamp"))
+        is_in = tx.get("to") == address
+        direction = "转入" if is_in else "转出"
+        
+        if is_in:
+            usdt_in_count += 1
+            if len(recent_tx_lines) < 5:
+                recent_tx_lines.append(f"{t_str} 转入 {val:,.2f} USDT")
+        else:
+            usdt_out_count += 1
+            if len(recent_tx_lines) < 5:
+                recent_tx_lines.append(f"{t_str} 转出 {val:,.2f} USDT")
+
+        # 添加至导出数据列表
+        export_list.append({
+            "交易哈希": tx.get("transaction_id"),
+            "时间": t_str,
+            "类型": direction,
+            "金额": val,
+            "代币": "USDT",
+            "对方地址": tx.get("from") if is_in else tx.get("to")
+        })
+
+    tx_history_text = "\n".join(recent_tx_lines) if recent_tx_lines else "近期无 USDT 交易记录"
+
+    msg = f"""👤账户类型: 普通账户
+🔍查询地址: `{address}`
+⏰创建时间: {create_time}
+🌟最后活跃: {last_active}
+➖➖➖➖➖➖➖➖
+💰 TRX  余额：{trx_bal:,.2f}
+💰 TRX  质押：{staked_trx:,.2f}
+💰USDT余额：{usdt_bal:,.2f}
+🔋能量：{available_energy:,}
+📡质押带宽：{staked_bw:,}
+📡免费带宽：{free_bw:,}
+💵 **预估总资产**: ${total_usd:,.2f} USD (≈ ￥{total_cny:,.2f} CNY)
+➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖
+⤴️USDT支出笔数：{usdt_out_count}  ⤵️USDT收入笔数：{usdt_in_count}
+{tx_history_text}"""
+    
+    return msg, export_list
+
+
+# ==================== 4. Telegram 交互句柄 ====================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 你好！请直接发送 TRX 地址（以 T 开头的 34 位字符串），我将为你查询账户详情。")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    # 正则识别 TRX 地址
+    if re.match(PATTERN_TRX, text):
+        # 权限与每日额度校验
+        passed, role_or_msg = check_and_update_perm(user_id)
+        if not passed:
+            await update.message.reply_text(role_or_msg)
+            return
+
+        loading = await update.message.reply_text("🔍 正在查询波场链上数据...")
+
+        try:
+            reply_msg, export_data = query_tron(text)
+            
+            # 暂存交易数据以供 CSV 导出
+            context.user_data[f"export_{text}"] = export_data
+            
+            # 挂载 Telegram 导出按钮
+            keyboard = [[InlineKeyboardButton("📥 导出 CSV 交易报告", callback_data=f"csv_{text}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await loading.edit_text(reply_msg, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception as e:
+            await loading.edit_text(f"❌ 查询失败，请检查地址或稍后再试。\n错误信息: {str(e)}")
+
+
+async def handle_csv_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理用户点击导出 CSV 按钮的请求"""
+    query = update.callback_query
+    await query.answer()
+
+    address = query.data.replace("csv_", "")
+    tx_list = context.user_data.get(f"export_{address}")
+
+    if not tx_list:
+        await query.message.reply_text("⚠️ 导出的数据超时失效，请重新发送地址查询后再导出。")
+        return
+
+    # 生成 CSV 字节流
+    df = pd.DataFrame(tx_list)
+    csv_buffer = io.BytesIO()
+    df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+    csv_buffer.seek(0)
+
+    # 发送文件给用户
+    await query.message.reply_document(
+        document=csv_buffer,
+        filename=f"TRX_Report_{address[:8]}.csv",
+        caption=f"📄 地址 `{address}` 的 50 笔 USDT 转账明细已生成。"
+    )
+
+
+# ==================== 5. 管理员控制指令 ====================
+
+async def add_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """管理员开通 VIP 命令: /addvip <user_id>"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    if not context.args:
+        await update.message.reply_text("使用方式: `/addvip 12345678`", parse_mode="Markdown")
+        return
+    
+    target_id = int(context.args[0])
+    conn = sqlite3.connect("bot_user_data.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO users (user_id, role) VALUES (?, 'vip') ON CONFLICT(user_id) DO UPDATE SET role='vip'", (target_id,))
+    conn.commit()
+    conn.close()
+    
+    await update.message.reply_text(f"✅ 已成功将用户 `{target_id}` 设为 VIP (每日查询额度提升至 100 次)！", parse_mode="Markdown")
+
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """管理员封禁命令: /ban <user_id>"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    if not context.args:
+        await update.message.reply_text("使用方式: `/ban 12345678`", parse_mode="Markdown")
+        return
+
+    target_id = int(context.args[0])
+    conn = sqlite3.connect("bot_user_data.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO users (user_id, role) VALUES (?, 'banned') ON CONFLICT(user_id) DO UPDATE SET role='banned'", (target_id,))
+    conn.commit()
+    conn.close()
+    
+    await update.message.reply_text(f"🚫 已将用户 `{target_id}` 加入黑名单并封禁。", parse_mode="Markdown")
+
+
+# ==================== 启动主程序 ====================
+
+def main():
+    init_db()  # 初始化数据库
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # 注册管理员命令
+    app.add_handler(CommandHandler("addvip", add_vip))
+    app.add_handler(CommandHandler("ban", ban_user))
+    app.add_handler(CommandHandler("start", start))
+
+    # 注册消息与按钮回调
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_csv_export, pattern=r"^csv_"))
+
+    print("🤖 TRX 查询机器人运行中 (已包含管理员控制、权限分级、汇率折算与数据导出功能)...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
